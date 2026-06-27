@@ -65,18 +65,6 @@ header h1{font-size:15px;font-weight:600;flex:1;}
   padding:5px 8px;color:var(--muted);cursor:pointer;font-size:14px;}
 .icon-btn.red{border-color:rgba(248,113,113,.3);color:var(--red);}
 
-/* なぞりモード */
-#traceOverlay{position:absolute;inset:0;z-index:15;touch-action:none;display:none;cursor:crosshair;}
-#traceOverlay.active{display:block;}
-.trace-bar{position:absolute;top:10px;left:50%;transform:translateX(-50%);
-  background:rgba(251,146,60,.92);border-radius:20px;padding:8px 16px;
-  font-size:13px;font-weight:600;color:#fff;white-space:nowrap;z-index:16;
-  pointer-events:none;display:none;box-shadow:0 2px 12px rgba(0,0,0,.4);}
-.trace-bar.show{display:block;}
-.trace-btn{background:var(--orange);border:none;border-radius:8px;padding:6px 12px;
-  color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;}
-.trace-btn.active{background:var(--red);}
-
 /* 駅リスト（登録済み） */
 .reg-list{overflow-y:auto;flex:1;padding:6px 0 12px;}
 .reg-list::-webkit-scrollbar{width:3px;}
@@ -244,8 +232,6 @@ header h1{font-size:15px;font-weight:600;flex:1;}
 <div class="screen active" id="s0">
   <div id="regMap">
     <div id="map"></div>
-    <div id="traceOverlay"></div>
-    <div class="trace-bar" id="traceBar">✏️ なぞって線路を描画中... 離すと確定</div>
     <!-- タップポップアップ -->
     <div class="tap-popup" id="tapPopup" style="display:none;position:absolute;top:40%;left:50%;">
       <h3>📍 この場所を駅として登録</h3>
@@ -269,7 +255,6 @@ header h1{font-size:15px;font-weight:600;flex:1;}
       <h2>登録駅</h2>
       <span id="regCount" style="font-size:12px;color:var(--accent);"></span>
       <button class="icon-btn" id="trackBtn" title="線路形状を取得" onclick="fetchTrackShape()" style="display:none;font-size:11px;padding:4px 8px;">🛤 線路取得</button>
-      <button class="trace-btn" id="traceToggle" style="display:none;" onclick="toggleTrace()">✏️ なぞる</button>
     </div>
     <div class="reg-list" id="regList">
       <div class="empty-reg">地図をタップして駅を登録してください</div>
@@ -403,9 +388,8 @@ function initMap(lat,lon){
     openStModal(la,ln,e.pixel);
   });
 
-  // ローディング非表示
   const ld=document.getElementById('loading');
-  if(ld){ld.style.opacity='0';setTimeout(()=>ld.remove(),400);}
+  ld.style.opacity='0';setTimeout(()=>ld.remove(),400);
 }
 
 /* ══ タブ切替 ══ */
@@ -555,165 +539,6 @@ out geom qt;`;
   return chain; // [[lon,lat],...]
 }
 
-/* ══ なぞりモード ══ */
-let traceMode=false, tracing=false, tracePath=[], traceSegIdx=0;
-let traceSource=null, traceFeature=null;
-
-function toggleTrace(){
-  if(!editingStations.length||editingStations.length<2){toast('2駅以上登録してください');return;}
-  traceMode=!traceMode;
-  const btn=document.getElementById('traceToggle');
-  const overlay=document.getElementById('traceOverlay');
-  if(traceMode){
-    btn.textContent='✕ なぞり終了';btn.classList.add('active');
-    overlay.classList.add('active');
-    // 地図のドラッグを無効化
-    map.getInteractions().forEach(i=>i.setActive(false));
-    // なぞり用レイヤーを追加
-    if(!traceSource){
-      traceSource=new ol.source.Vector();
-      map.addLayer(new ol.layer.Vector({source:traceSource,zIndex:10,
-        style:new ol.style.Style({stroke:new ol.style.Stroke({color:'#fb923c',width:3,lineDash:[4,3]})})}));
-    }
-    traceSource.clear();
-    // どの区間をなぞるか選択
-    showSegPicker();
-  }else{
-    exitTrace();
-  }
-}
-
-function exitTrace(){
-  traceMode=false;tracing=false;tracePath=[];
-  const btn=document.getElementById('traceToggle');
-  btn.textContent='✏️ なぞる';btn.classList.remove('active');
-  document.getElementById('traceOverlay').classList.remove('active');
-  document.getElementById('traceBar').classList.remove('show');
-  map.getInteractions().forEach(i=>i.setActive(true));
-  traceSource?.clear();
-}
-
-function showSegPicker(){
-  const opts=editingStations.slice(0,-1).map((s,i)=>`${i+1}:${s.name}→${editingStations[i+1].name}`).join('
-');
-  const ans=prompt(`なぞる区間番号を入力してください:
-${opts}
-
-番号:`);
-  const idx=parseInt(ans)-1;
-  if(isNaN(idx)||idx<0||idx>=editingStations.length-1){exitTrace();return;}
-  traceSegIdx=idx;
-  tracePath=[];
-  document.getElementById('traceBar').classList.add('show');
-  toast(`区間${idx+1}をなぞってください`);
-  // 対象駅を地図中心に
-  const s0=editingStations[idx],s1=editingStations[idx+1];
-  const ext=ol.extent.boundingExtent([
-    ol.proj.fromLonLat([s0.lon,s0.lat]),
-    ol.proj.fromLonLat([s1.lon,s1.lat])
-  ]);
-  map.getView().fit(ext,{padding:[80,40,280,40],duration:400,maxZoom:16});
-  setupTraceEvents();
-}
-
-function setupTraceEvents(){
-  const overlay=document.getElementById('traceOverlay');
-  // タッチ
-  overlay.ontouchstart=e=>{
-    e.preventDefault();tracing=true;tracePath=[];
-    const pt=getTouchPt(e);if(pt)addTracePt(pt);
-  };
-  overlay.ontouchmove=e=>{
-    e.preventDefault();if(!tracing)return;
-    const pt=getTouchPt(e);if(pt)addTracePt(pt);
-  };
-  overlay.ontouchend=e=>{
-    e.preventDefault();if(tracing&&tracePath.length>=2)confirmTrace();
-    tracing=false;
-  };
-  // マウス（PC用）
-  overlay.onmousedown=e=>{tracing=true;tracePath=[];addTracePt([e.clientX,e.clientY]);};
-  overlay.onmousemove=e=>{if(!tracing)return;addTracePt([e.clientX,e.clientY]);};
-  overlay.onmouseup=e=>{if(tracing&&tracePath.length>=2)confirmTrace();tracing=false;};
-}
-
-function getTouchPt(e){
-  const t=e.touches[0]||e.changedTouches[0];
-  if(!t)return null;
-  return[t.clientX,t.clientY];
-}
-
-function addTracePt([cx,cy]){
-  const rect=document.getElementById('map').getBoundingClientRect();
-  const px=[cx-rect.left,cy-rect.top];
-  const coord=map.getCoordinateFromPixel(px);
-  if(!coord)return;
-  const[lon,lat]=ol.proj.toLonLat(coord);
-  // 間引き（前の点から0.00005度以上離れた場合のみ追加）
-  if(tracePath.length>0){
-    const prev=tracePath[tracePath.length-1];
-    const d=Math.sqrt((lon-prev[0])**2+(lat-prev[1])**2);
-    if(d<0.00005)return;
-  }
-  tracePath.push([lon,lat]);
-  // オーバーレイに描画
-  if(traceSource&&tracePath.length>=2){
-    traceSource.clear();
-    traceSource.addFeature(new ol.Feature({
-      geometry:new ol.geom.LineString(tracePath.map(([ln,la])=>ol.proj.fromLonLat([ln,la])))
-    }));
-  }
-}
-
-function confirmTrace(){
-  if(tracePath.length<2){toast('もう少し長くなぞってください');return;}
-  // 間引き（douglasPeucker）
-  const simplified=douglasPeucker(tracePath,0.00008);
-  editingStations[traceSegIdx]._trackToNext=simplified;
-  toast(`区間${traceSegIdx+1}の線路を登録しました（${simplified.length}点）`);
-  exitTrace();
-  rebuildEditMap();
-  // 次の区間を続けてなぞるか確認
-  if(traceSegIdx<editingStations.length-2){
-    setTimeout(()=>{
-      if(confirm(`次の区間（${editingStations[traceSegIdx+1].name}→${editingStations[traceSegIdx+2].name}）もなぞりますか？`)){
-        traceMode=true;
-        document.getElementById('traceOverlay').classList.add('active');
-        document.getElementById('traceToggle').classList.add('active');
-        map.getInteractions().forEach(i=>i.setActive(false));
-        traceSegIdx++;
-        tracePath=[];
-        document.getElementById('traceBar').classList.add('show');
-        const s0=editingStations[traceSegIdx],s1=editingStations[traceSegIdx+1];
-        const ext=ol.extent.boundingExtent([
-          ol.proj.fromLonLat([s0.lon,s0.lat]),ol.proj.fromLonLat([s1.lon,s1.lat])]);
-        map.getView().fit(ext,{padding:[80,40,280,40],duration:400,maxZoom:16});
-        setupTraceEvents();
-      }
-    },300);
-  }
-}
-
-// Douglas-Peuckerアルゴリズムで点を間引く
-function douglasPeucker(pts,eps){
-  if(pts.length<=2)return pts;
-  let maxD=0,maxI=0;
-  const[x1,y1]=pts[0],[x2,y2]=pts[pts.length-1];
-  const len=Math.sqrt((x2-x1)**2+(y2-y1)**2);
-  for(let i=1;i<pts.length-1;i++){
-    const[px,py]=pts[i];
-    const d=len>0?Math.abs((y2-y1)*px-(x2-x1)*py+x2*y1-y2*x1)/len:
-      Math.sqrt((px-x1)**2+(py-y1)**2);
-    if(d>maxD){maxD=d;maxI=i;}
-  }
-  if(maxD>eps){
-    const l=douglasPeucker(pts.slice(0,maxI+1),eps);
-    const r=douglasPeucker(pts.slice(maxI),eps);
-    return l.slice(0,-1).concat(r);
-  }
-  return[pts[0],pts[pts.length-1]];
-}
-
 let trackFetching=false;
 async function fetchTrackShape(){
   if(editingStations.length<2){toast('2駅以上登録してください');return;}
@@ -769,10 +594,8 @@ function renderRegList(){
   if(editingStations.length>=2){
     document.getElementById('hBtn').style.display='';
     document.getElementById('trackBtn').style.display='';
-    document.getElementById('traceToggle').style.display='';
   }else{
     document.getElementById('trackBtn').style.display='none';
-    document.getElementById('traceToggle').style.display='none';
   }
 }
 
@@ -1061,23 +884,14 @@ function toast(msg){
 }
 
 /* ══ 起動 ══ */
-function hideLoading(){
-  const ld=document.getElementById('loading');
-  if(ld){ld.style.opacity='0';setTimeout(()=>ld.remove(),400);}
-}
-
 window.addEventListener('load',()=>{
-  let done=false;
-  const go=(lat,lon)=>{if(!done){done=true;initMap(lat,lon);}};
-  // 5秒で強制起動
-  setTimeout(()=>go(35.6812,139.7671),5000);
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      p=>go(p.coords.latitude,p.coords.longitude),
-      ()=>go(35.6812,139.7671),
-      {enableHighAccuracy:false,timeout:4000,maximumAge:60000}
+      p=>initMap(p.coords.latitude,p.coords.longitude),
+      ()=>initMap(35.6812,139.7671),
+      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
     );
-  }else{go(35.6812,139.7671);}
+  }else{initMap(35.6812,139.7671);}
 });
 </script>
 </body>
