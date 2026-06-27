@@ -864,12 +864,12 @@ function showModeDialog(){
 }
 
 /* ══ GPS走行 ══ */
-let gpsId=null,gpsMode=false,curIdx=0,departed=false,dwellStart=null;
-const DWELL_MS=10000,MOVE_KMH=2,ST_RAD=200;
+let gpsId=null,gpsMode=false,curIdx=0,departed=false;
+const MOVE_KMH=2,ST_RAD=200;
 
 function startGPS(){
   if(!navigator.geolocation){toast('Geolocation非対応');startSim();return;}
-  gpsMode=true;curIdx=0;departed=false;dwellStart=null;
+  gpsMode=true;curIdx=0;departed=false;
   initChart();setBadges('gps');
   document.getElementById('gpsWait').classList.add('show');
   gpsId=navigator.geolocation.watchPosition(onGps,
@@ -897,32 +897,39 @@ function onGps(pos){
   gpsSource.clear();
   gpsSource.addFeature(new ol.Feature({geometry:new ol.geom.Point(ol.proj.fromLonLat([ln,la]))}));
   const sts=activeRunLine.stations;
+
   if(!departed){
+    // 最寄り駅を探す
     let minD=1e9,minI=0;
     sts.forEach((s,i)=>{const d=haversine(la,ln,s.lat,s.lon)*1000;if(d<minD){minD=d;minI=i;}});
-    const dw=minD<ST_RAD;
-    if(dw){
-      if(!dwellStart){dwellStart=pos.timestamp;curIdx=minI;}
-      const left=Math.max(0,(DWELL_MS-(pos.timestamp-dwellStart))/1000).toFixed(0);
+    curIdx=minI;
+    const nextIdx=Math.min(minI+1,sts.length-1);
+    if(minD<ST_RAD){
+      // 駅の近く → 動き出したら即出発
       document.getElementById('gpsMsg').textContent=
-        `${sts[minI].name}付近で停車確認中\n出発まで約${left}秒\n次: ${sts[Math.min(minI+1,sts.length-1)].name}`;
-      if((pos.timestamp-dwellStart)>=DWELL_MS&&(kmh==null||kmh>=MOVE_KMH)){
-        departed=true;curIdx=minI;
+        `${sts[minI].name}にいます
+動き出したら走行を開始します
+次の駅: ${sts[nextIdx].name}`;
+      if(kmh!=null&&kmh>=MOVE_KMH){
+        departed=true;
         document.getElementById('gpsWait').classList.remove('show');
         toast(`${sts[minI].name}を出発！`);
       }
     }else{
-      dwellStart=null;
       document.getElementById('gpsMsg').textContent=
-        `GPS走行待機中\n最寄駅: ${sts[minI].name}\n(${Math.round(minD)}m先)`;
+        `GPS走行待機中
+最寄駅: ${sts[minI].name}
+(${Math.round(minD)}m先)`;
     }
     updateSpd(kmh||0);return;
   }
+
+  // 走行中: 次の駅200m以内で到着（速度条件なし）
   const ni=curIdx+1;
   if(ni<sts.length){
     const dn=haversine(la,ln,sts[ni].lat,sts[ni].lon)*1000;
-    if(dn<ST_RAD&&(kmh==null||kmh<MOVE_KMH)){
-      curIdx=ni;departed=false;dwellStart=pos.timestamp;
+    if(dn<ST_RAD){
+      curIdx=ni;departed=false;
       resetSeg();toast(`${sts[ni].name}に到着`);
       if(ni>=sts.length-1){toast('終点到着！');stopGPS();}
       return;
