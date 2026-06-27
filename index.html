@@ -209,6 +209,7 @@ header h1{font-size:15px;font-weight:600;flex:1;}
 <div id="gpsWait">
   <div class="big-spin"></div>
   <p id="gpsMsg">GPS位置情報を取得中...</p>
+  <button onclick="forceDeparture()" style="background:rgba(52,211,153,.2);color:#34d399;border-color:rgba(52,211,153,.4);">🚆 強制出発（デバッグ用）</button>
   <button onclick="switchSim()">シミュレーションに切替</button>
 </div>
 
@@ -880,6 +881,14 @@ function stopGPS(){
   document.getElementById('gpsWait').classList.remove('show');
 }
 function switchSim(){stopGPS();startSim();}
+function forceDeparture(){
+  if(!departed){
+    departed=true;
+    document.getElementById('gpsWait').classList.remove('show');
+    const sts=activeRunLine.stations;
+    toast(sts[curIdx].name+'を強制出発');
+  }
+}
 
 function onGps(pos){
   const{latitude:la,longitude:ln,speed,accuracy}=pos.coords;
