@@ -922,8 +922,9 @@ function onGps(pos){
   const ss=sts[curIdx],ns=sts[Math.min(curIdx+1,sts.length-1)];
   const segM=Math.max(200,haversine(ss.lat,ss.lon,ns.lat,ns.lon)*1000);
   const gone=Math.min(segM,haversine(ss.lat,ss.lon,la,ln)*1000);
-  updateSegUI(ss,ns,gone/segM,segM,kmh||0);
-  actSpd.push(+(kmh||0).toFixed(1));pushChart();updateScore();
+  const posT=Math.min(1,gone/segM);
+  updateSegUI(ss,ns,posT,segM,kmh||0);
+  actSpd.push(+(kmh||0).toFixed(1));pushChart(posT);updateScore();
 }
 
 /* ══ シミュレーション ══ */
@@ -946,7 +947,7 @@ function simTick(){
   const ti=Math.min(POINTS-1,Math.floor(simT*(POINTS-1)));
   const opt=optSpd[ti]??0;
   const act=Math.max(0,Math.min(115,opt+(Math.random()-.5)*16+(simT>.6?4:0)));
-  actSpd.push(+act.toFixed(1));pushChart();
+  actSpd.push(+act.toFixed(1));pushChart(simT);
   const d0=sts[simIdx].dist||0,d1=sts[simIdx+1]?.dist||0;
   updateSegUI(sts[simIdx],sts[simIdx+1]||sts[simIdx],simT,Math.max(300,(d1-d0)*1000),act);
   updateScore();
@@ -979,6 +980,9 @@ function initChart(){
       {label:'最適',data:optSpd,borderColor:'#4f8ef7',borderWidth:2,pointRadius:0,tension:.4,
         fill:{target:'origin',above:'rgba(79,142,247,.06)'}},
       {label:'実走行',data:[],borderColor:'#fb923c',borderWidth:2,borderDash:[5,3],pointRadius:0,tension:.3,fill:false},
+      {label:'現在位置',data:[],borderColor:'#34d399',borderWidth:2,
+        pointRadius:[8],pointStyle:'triangle',pointBackgroundColor:'#34d399',
+        pointBorderColor:'#fff',pointBorderWidth:2,showLine:false,fill:false},
     ]},
     options:{responsive:true,maintainAspectRatio:false,animation:false,
       plugins:{legend:{display:false},tooltip:{enabled:false}},
@@ -989,11 +993,21 @@ function initChart(){
 function resetSeg(){
   const gi=gpsMode?curIdx:simIdx;
   optSpd=buildOpt(gradeAt(gi));actSpd=[];buildGradeBar(gradeAt(gi));
-  if(rc){rc.data.datasets[0].data=optSpd;rc.data.datasets[1].data=[];rc.update('none');}
+  if(rc){rc.data.datasets[0].data=optSpd;rc.data.datasets[1].data=[];rc.data.datasets[2].data=[];rc.update('none');}
 }
-function pushChart(){
+function pushChart(posT){
   if(!rc)return;
   rc.data.datasets[1].data=[...actSpd,...Array(Math.max(0,POINTS-actSpd.length)).fill(null)];
+  // 現在位置マーカー: posT(0~1)をX軸インデックスに変換して▲を表示
+  if(posT!=null){
+    const xi=Math.round(posT*(POINTS-1));
+    // 現在位置のY値は最適曲線の値を使う（X軸上のどこかを示すため）
+    const yv=optSpd[xi]??0;
+    // マーカー用に全点nullにして現在位置だけ値を入れる
+    const markerData=Array(POINTS).fill(null);
+    markerData[xi]=yv;
+    rc.data.datasets[2].data=markerData;
+  }
   rc.update('none');
 }
 function buildGradeBar(g){
