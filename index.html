@@ -1088,14 +1088,22 @@ function toast(msg){
 }
 
 /* ══ 起動 ══ */
-window.addEventListener('load',()=>{
+window.addEventListener('load',function(){
+  var done=false;
+  function go(lat,lon){
+    if(done)return;
+    done=true;
+    initMap(lat,lon);
+  }
+  // 5秒で強制起動（フォールバック）
+  setTimeout(function(){go(35.6812,139.7671);},5000);
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      p=>initMap(p.coords.latitude,p.coords.longitude),
-      ()=>initMap(35.6812,139.7671),
-      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
+      function(p){go(p.coords.latitude,p.coords.longitude);},
+      function(){go(35.6812,139.7671);},
+      {enableHighAccuracy:false,timeout:4000,maximumAge:60000}
     );
-  }else{initMap(35.6812,139.7671);}
+  }else{go(35.6812,139.7671);}
 });
 </script>
 </body>
