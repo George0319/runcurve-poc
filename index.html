@@ -864,12 +864,12 @@ function showModeDialog(){
 }
 
 /* ══ GPS走行 ══ */
-let gpsId=null,gpsMode=false,curIdx=0,departed=false;
-const MOVE_KMH=2,ST_RAD=200;
+let gpsId=null,gpsMode=false,curIdx=0,departed=false,dwellStart=null;
+const DWELL_MS=10000,MOVE_KMH=2,ST_RAD=200;
 
 function startGPS(){
   if(!navigator.geolocation){toast('Geolocation非対応');startSim();return;}
-  gpsMode=true;curIdx=0;departed=false;
+  gpsMode=true;curIdx=0;departed=false;dwellStart=null;
   initChart();setBadges('gps');
   document.getElementById('gpsWait').classList.add('show');
   gpsId=navigator.geolocation.watchPosition(onGps,
@@ -886,55 +886,44 @@ function forceDeparture(){
     departed=true;
     document.getElementById('gpsWait').classList.remove('show');
     const sts=activeRunLine.stations;
-    toast(sts[curIdx].name+'を出発！');
+    toast(sts[curIdx].name+'を強制出発');
   }
 }
 
 function onGps(pos){
   const{latitude:la,longitude:ln,speed,accuracy}=pos.coords;
   const kmh=speed!=null?Math.max(0,speed*3.6):null;
-  document.getElementById('gpsAcc').textContent='GPS ±'+Math.round(accuracy)+'m';
+  document.getElementById('gpsAcc').textContent=`GPS ±${Math.round(accuracy)}m`;
   gpsSource.clear();
   gpsSource.addFeature(new ol.Feature({geometry:new ol.geom.Point(ol.proj.fromLonLat([ln,la]))}));
   const sts=activeRunLine.stations;
-
   if(!departed){
-    // 現在地に最も近い駅を探す
     let minD=1e9,minI=0;
-    sts.forEach(function(s,i){
-      const d=haversine(la,ln,s.lat,s.lon)*1000;
-      if(d<minD){minD=d;minI=i;}
-    });
-    curIdx=minI;
-    const nextName=sts[Math.min(minI+1,sts.length-1)].name;
-    if(minD<ST_RAD){
-      // 駅の近く → 動き出したら出発
+    sts.forEach((s,i)=>{const d=haversine(la,ln,s.lat,s.lon)*1000;if(d<minD){minD=d;minI=i;}});
+    const dw=minD<ST_RAD;
+    if(dw){
+      if(!dwellStart){dwellStart=pos.timestamp;curIdx=minI;}
+      const left=Math.max(0,(DWELL_MS-(pos.timestamp-dwellStart))/1000).toFixed(0);
       document.getElementById('gpsMsg').textContent=
-        sts[minI].name+'にいます
-動き出したら走行を開始します
-次の駅: '+nextName;
-      if(kmh!=null&&kmh>=MOVE_KMH){
-        departed=true;
+        `${sts[minI].name}付近で停車確認中\n出発まで約${left}秒\n次: ${sts[Math.min(minI+1,sts.length-1)].name}`;
+      if((pos.timestamp-dwellStart)>=DWELL_MS&&(kmh==null||kmh>=MOVE_KMH)){
+        departed=true;curIdx=minI;
         document.getElementById('gpsWait').classList.remove('show');
-        toast(sts[minI].name+'を出発！');
+        toast(`${sts[minI].name}を出発！`);
       }
     }else{
-      // 駅から離れている
+      dwellStart=null;
       document.getElementById('gpsMsg').textContent=
-        'GPS走行待機中
-最寄駅: '+sts[minI].name+'
-('+Math.round(minD)+'m先)';
+        `GPS走行待機中\n最寄駅: ${sts[minI].name}\n(${Math.round(minD)}m先)`;
     }
     updateSpd(kmh||0);return;
   }
-
-  // 走行中: 次の駅に近づいたら到着判定（速度条件なし・距離のみ）
   const ni=curIdx+1;
   if(ni<sts.length){
     const dn=haversine(la,ln,sts[ni].lat,sts[ni].lon)*1000;
-    if(dn<ST_RAD){
-      curIdx=ni;departed=false;
-      resetSeg();toast(sts[ni].name+'に到着');
+    if(dn<ST_RAD&&(kmh==null||kmh<MOVE_KMH)){
+      curIdx=ni;departed=false;dwellStart=pos.timestamp;
+      resetSeg();toast(`${sts[ni].name}に到着`);
       if(ni>=sts.length-1){toast('終点到着！');stopGPS();}
       return;
     }
@@ -1088,22 +1077,14 @@ function toast(msg){
 }
 
 /* ══ 起動 ══ */
-window.addEventListener('load',function(){
-  var done=false;
-  function go(lat,lon){
-    if(done)return;
-    done=true;
-    initMap(lat,lon);
-  }
-  // 5秒で強制起動（フォールバック）
-  setTimeout(function(){go(35.6812,139.7671);},5000);
+window.addEventListener('load',()=>{
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      function(p){go(p.coords.latitude,p.coords.longitude);},
-      function(){go(35.6812,139.7671);},
-      {enableHighAccuracy:false,timeout:4000,maximumAge:60000}
+      p=>initMap(p.coords.latitude,p.coords.longitude),
+      ()=>initMap(35.6812,139.7671),
+      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
     );
-  }else{go(35.6812,139.7671);}
+  }else{initMap(35.6812,139.7671);}
 });
 </script>
 </body>
