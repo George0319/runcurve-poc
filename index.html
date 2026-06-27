@@ -1061,13 +1061,19 @@ function toast(msg){
 
 /* ══ 起動 ══ */
 window.addEventListener('load',()=>{
+  // 5秒以内に取れなければ東京駅で起動
+  let done=false;
+  const fallback=setTimeout(()=>{
+    if(!done){done=true;initMap(35.6812,139.7671);}
+  },5000);
+
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      p=>initMap(p.coords.latitude,p.coords.longitude),
-      ()=>initMap(35.6812,139.7671),
-      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
+      p=>{if(!done){done=true;clearTimeout(fallback);initMap(p.coords.latitude,p.coords.longitude);}},
+      ()=>{if(!done){done=true;clearTimeout(fallback);initMap(35.6812,139.7671);}},
+      {enableHighAccuracy:false,timeout:4500,maximumAge:60000}
     );
-  }else{initMap(35.6812,139.7671);}
+  }else{clearTimeout(fallback);initMap(35.6812,139.7671);}
 });
 </script>
 </body>
