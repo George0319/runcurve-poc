@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>省エネランカーブ PoC</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@9.2.4/ol.css">
+<script src="https://cdn.jsdelivr.net/npm/ol@9.2.4/dist/ol.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#222636;
+  --border:rgba(255,255,255,0.09);--text:#e8eaf0;--muted:#7a7f96;
+  --accent:#4f8ef7;--green:#34d399;--orange:#fb923c;--red:#f87171;--radius:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Hiragino Sans','Noto Sans JP',sans-serif;background:var(--bg);color:var(--text);
+  height:100dvh;display:flex;flex-direction:column;overflow:hidden;font-size:14px;}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:11px 16px;
+  display:flex;align-items:center;gap:10px;flex-shrink:0;z-index:10;}
+header h1{font-size:15px;font-weight:600;flex:1;}
+.step-dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--muted);background:var(--border);transition:all .3s;}
+.step-dot.active{background:var(--accent);border-color:var(--accent);}
+.step-dot.done{background:var(--green);border-color:var(--green);}
+.step-indicator{display:flex;gap:6px;}
+
+.screen{display:none;flex-direction:column;flex:1;overflow:hidden;}
+.screen.active{display:flex;}
+
+/* ── S1 地図 ── */
+#mapWrap{flex:1;position:relative;}
+#map{width:100%;height:100%;}
+.map-top{position:absolute;top:10px;left:10px;right:10px;z-index:5;pointer-events:none;}
+.search-bar{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:9px 12px;display:flex;gap:8px;pointer-events:all;box-shadow:0 3px 16px rgba(0,0,0,.45);}
+.search-bar input{flex:1;background:none;border:none;outline:none;color:var(--text);font-size:14px;}
+.search-bar input::placeholder{color:var(--muted);}
+.s-btn{background:var(--accent);border:none;border-radius:8px;padding:6px 12px;
+  color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;}
+
+/* 地図上のポップアップ */
+.map-popup{position:absolute;background:var(--surface);border:1px solid var(--border);
+  border-radius:10px;padding:12px 14px;z-index:20;min-width:180px;
+  box-shadow:0 4px 20px rgba(0,0,0,.5);pointer-events:all;}
+.map-popup h3{font-size:13px;font-weight:600;margin-bottom:4px;}
+.map-popup p{font-size:11px;color:var(--muted);margin-bottom:10px;}
+.popup-btn{width:100%;padding:8px;background:var(--accent);color:#fff;border:none;
+  border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;}
+.popup-close{position:absolute;top:8px;right:10px;background:none;border:none;
+  color:var(--muted);cursor:pointer;font-size:16px;line-height:1;}
+
+/* 路線パネル（下から） */
+.bottom-panel{position:absolute;bottom:0;left:0;right:0;background:var(--surface);
+  border-top:1px solid var(--border);border-radius:18px 18px 0 0;
+  z-index:10;display:flex;flex-direction:column;max-height:55vh;}
+.panel-handle{width:36px;height:4px;background:var(--border);border-radius:2px;margin:10px auto 0;}
+.panel-head{padding:10px 16px 6px;display:flex;align-items:center;gap:8px;}
+.panel-head h2{font-size:13px;font-weight:500;color:var(--muted);flex:1;letter-spacing:.04em;text-transform:uppercase;}
+.panel-list{overflow-y:auto;flex:1;padding-bottom:12px;}
+.panel-list::-webkit-scrollbar{width:3px;}
+.panel-list::-webkit-scrollbar-thumb{background:var(--border);}
+.line-row{display:flex;align-items:center;gap:12px;padding:11px 16px;
+  cursor:pointer;border-bottom:1px solid var(--border);transition:background .15s;}
+.line-row:last-child{border-bottom:none;}
+.line-row:active{background:var(--surface2);}
+.lc{width:4px;height:34px;border-radius:2px;flex-shrink:0;}
+.li{flex:1;}
+.ln{font-size:14px;font-weight:600;}
+.ls{font-size:11px;color:var(--muted);margin-top:2px;}
+.lb{font-size:11px;padding:3px 8px;border-radius:20px;
+  background:rgba(79,142,247,.12);color:var(--accent);border:1px solid rgba(79,142,247,.2);}
+
+/* ローディング系 */
+.loading-row{display:flex;align-items:center;gap:10px;padding:16px;}
+.mini-spin{width:18px;height:18px;border:2px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty-msg{padding:20px 16px;color:var(--muted);font-size:13px;text-align:center;}
+
+/* ── S2 駅リスト ── */
+.sh{padding:13px 16px;background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.back{background:none;border:1px solid var(--border);border-radius:8px;
+  padding:5px 10px;color:var(--muted);cursor:pointer;font-size:13px;}
+.sh-title{font-size:15px;font-weight:600;flex:1;}
+.st-list{flex:1;overflow-y:auto;padding:10px 0;}
+.st-item{display:flex;align-items:center;gap:10px;padding:9px 16px;}
+.st-col{display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:20px;}
+.st-dot{width:11px;height:11px;border-radius:50%;border:2px solid var(--accent);background:var(--bg);}
+.st-dot.t{background:var(--accent);}
+.st-vl{width:2px;height:20px;margin:2px 0;}
+.st-name{font-size:13px;}
+.st-meta{font-size:11px;color:var(--muted);margin-top:1px;}
+.grade-legend{display:flex;align-items:center;gap:6px;padding:6px 16px;
+  font-size:11px;color:var(--muted);flex-shrink:0;border-bottom:1px solid var(--border);}
+.gl{width:12px;height:10px;border-radius:2px;}
+.confirm-bar{padding:11px 16px;background:var(--surface);border-top:1px solid var(--border);flex-shrink:0;}
+.btn-row{display:flex;gap:8px;}
+.pri{flex:1;padding:13px;background:var(--accent);color:#fff;border:none;
+  border-radius:var(--radius);font-size:14px;font-weight:600;cursor:pointer;}
+.sec{padding:13px 14px;background:none;color:var(--accent);border:1px solid var(--accent);
+  border-radius:var(--radius);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;}
+
+/* ── S3 走行 ── */
+.rc-body{flex:1;overflow-y:auto;padding:12px 16px;display:flex;flex-direction:column;gap:11px;}
+.rc-body::-webkit-scrollbar{width:3px;}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:13px;}
+.card-title{font-size:11px;color:var(--muted);font-weight:500;letter-spacing:.05em;
+  text-transform:uppercase;margin-bottom:9px;display:flex;justify-content:space-between;align-items:center;}
+.st-pair{display:flex;align-items:center;}
+.stb{flex:1;text-align:center;}
+.stb-l{font-size:11px;color:var(--muted);margin-bottom:2px;}
+.stb-n{font-size:17px;font-weight:700;}
+.arrow{padding:0 8px;font-size:18px;color:var(--accent);}
+.prog-wrap{margin-top:10px;height:5px;background:var(--surface2);border-radius:3px;overflow:hidden;}
+.prog-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));border-radius:3px;transition:width .4s;}
+.prog-lbl{display:flex;justify-content:space-between;margin-top:5px;font-size:11px;color:var(--muted);}
+.spd-row{display:flex;align-items:flex-end;gap:6px;}
+.spd-val{font-size:44px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums;}
+.spd-unit{font-size:13px;color:var(--muted);margin-bottom:5px;}
+.spd-right{margin-left:auto;text-align:right;margin-bottom:5px;}
+.spd-lim{font-size:11px;color:var(--muted);}
+.spd-lim b{font-size:14px;color:var(--text);}
+.grade-now{font-size:11px;color:var(--muted);margin-top:3px;}
+.grade-now b{font-size:13px;}
+.badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px;}
+.badge{display:flex;align-items:center;gap:4px;font-size:11px;font-weight:600;padding:4px 9px;border-radius:20px;}
+.b-pow{background:rgba(251,146,60,.15);color:var(--orange);border:1px solid rgba(251,146,60,.25);}
+.b-cst{background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.2);}
+.b-brk{background:rgba(248,113,113,.12);color:var(--red);border:1px solid rgba(248,113,113,.2);}
+.b-gps{background:rgba(79,142,247,.12);color:var(--accent);border:1px solid rgba(79,142,247,.2);}
+.b-sim{background:rgba(251,146,60,.12);color:var(--orange);border:1px solid rgba(251,146,60,.2);}
+.bdot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+.bdot.pulse{animation:pulse 1s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+.chart-wrap{position:relative;height:155px;}
+.grade-bar{height:5px;border-radius:3px;display:flex;overflow:hidden;margin-top:5px;}
+.grade-seg{height:100%;}
+.chart-legend{display:flex;gap:12px;margin-top:7px;}
+.leg{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);}
+.leg-line{width:13px;height:2px;border-radius:1px;}
+.score-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;}
+.sc-item{background:var(--surface2);border-radius:8px;padding:9px 11px;}
+.sc-label{font-size:11px;color:var(--muted);margin-bottom:3px;}
+.sc-val{font-size:17px;font-weight:700;}
+.sc-val.good{color:var(--green);}.sc-val.warn{color:var(--orange);}.sc-val.bad{color:var(--red);}
+.tot-row{display:flex;align-items:center;gap:11px;margin-bottom:9px;}
+.tot-num{font-size:46px;font-weight:700;line-height:1;color:var(--green);font-variant-numeric:tabular-nums;}
+.tot-ring{flex:1;height:7px;background:var(--surface2);border-radius:4px;overflow:hidden;}
+.tot-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,var(--accent),var(--green));transition:width 1s;}
+
+/* GPS待機 */
+#gpsWait{display:none;position:fixed;inset:0;background:rgba(15,17,23,.93);
+  z-index:50;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px;}
+#gpsWait.show{display:flex;}
+#gpsWait p{color:var(--muted);font-size:13px;text-align:center;line-height:1.7;white-space:pre-line;}
+.big-spin{width:48px;height:48px;border:4px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .8s linear infinite;}
+#gpsWait button{padding:9px 22px;background:none;color:var(--muted);
+  border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:13px;}
+
+/* 全体ローディング */
+#loading{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:12px;z-index:999;transition:opacity .4s;}
+.spin{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--accent);
+  border-radius:50%;animation:spin .8s linear infinite;}
+#loading p{color:var(--muted);font-size:13px;}
+
+/* トースト */
+#toast{position:fixed;bottom:72px;left:50%;transform:translateX(-50%);
+  background:var(--surface2);border:1px solid var(--border);border-radius:20px;
+  padding:7px 15px;font-size:12px;color:var(--text);z-index:200;
+  opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap;}
+#toast.show{opacity:1;}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spin"></div><p id="loadMsg">現在地を取得中...</p></div>
+<div id="toast"></div>
+<div id="gpsWait">
+  <div class="big-spin"></div>
+  <p id="gpsWaitMsg">GPS位置情報を取得中...</p>
+  <button onclick="switchToSim()">シミュレーションに切替</button>
+</div>
+
+<header>
+  <h1 id="hTitle">路線を選択</h1>
+  <div class="step-indicator">
+    <div class="step-dot active" id="d1"></div>
+    <div class="step-dot" id="d2"></div>
+    <div class="step-dot" id="d3"></div>
+  </div>
+</header>
+
+<!-- S1 地図 -->
+<div class="screen active" id="s1">
+  <div id="mapWrap">
+    <div id="map"></div>
+    <div class="map-top">
+      <div class="search-bar">
+        <input id="searchInput" type="text" placeholder="路線名で検索（例: 山手線）"
+          onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="s-btn" onclick="doSearch()">検索</button>
+      </div>
+    </div>
+    <div id="popup" class="map-popup" style="display:none;">
+      <button class="popup-close" onclick="closePopup()">✕</button>
+      <h3 id="popupTitle">—</h3>
+      <p id="popupSub">—</p>
+      <button class="popup-btn" onclick="selectFromPopup()">この路線を選択</button>
+    </div>
+  </div>
+  <div class="bottom-panel" id="bPanel">
+    <div class="panel-handle"></div>
+    <div class="panel-head">
+      <h2>路線リスト</h2>
+      <span id="panelSub" style="font-size:11px;color:var(--accent);"></span>
+    </div>
+    <div class="panel-list" id="lineList">
+      <div class="empty-msg">地図をタップ、または路線名で検索</div>
+    </div>
+  </div>
+</div>
+
+<!-- S2 駅リスト -->
+<div class="screen" id="s2">
+  <div class="sh">
+    <button class="back" onclick="goTo(1)">← 戻る</button>
+    <span class="sh-title" id="s2Title">駅リスト</span>
+  </div>
+  <div class="grade-legend" id="gradeLegend" style="display:none;">
+    <div class="gl" style="background:var(--green)"></div>平坦
+    <div class="gl" style="background:var(--orange);margin-left:8px"></div>上り
+    <div class="gl" style="background:var(--accent);margin-left:8px"></div>下り
+    <span id="gradeStatus" style="margin-left:auto;color:var(--accent);font-size:11px;"></span>
+  </div>
+  <div class="st-list" id="stList"></div>
+  <div class="confirm-bar">
+    <div class="btn-row">
+      <button class="sec" id="gradeBtn" onclick="fetchGrades()">勾配取得</button>
+      <button class="pri" onclick="showModeChoice()">走行開始</button>
+    </div>
+  </div>
+</div>
+
+<!-- S3 走行 -->
+<div class="screen" id="s3">
+  <div class="sh">
+    <button class="back" onclick="goTo(1)">← 路線選択</button>
+    <span class="sh-title" id="s3Title">走行中</span>
+    <span class="badge" id="modeBadge"></span>
+  </div>
+  <div class="rc-body">
+    <div class="card">
+      <div class="card-title">現在区間</div>
+      <div class="st-pair">
+        <div class="stb"><div class="stb-l">現在駅</div><div class="stb-n" id="curSt">—</div></div>
+        <div class="arrow">→</div>
+        <div class="stb"><div class="stb-l">次の駅</div><div class="stb-n" id="nxtSt">—</div></div>
+      </div>
+      <div class="prog-wrap"><div class="prog-fill" id="prog" style="width:0%"></div></div>
+      <div class="prog-lbl"><span id="progA">0m</span><span id="progB">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">現在速度
+        <span id="gpsAcc" style="font-size:11px;color:var(--muted);font-weight:400;text-transform:none;"></span>
+      </div>
+      <div class="spd-row">
+        <div class="spd-val" id="spdVal">0</div>
+        <div class="spd-unit">km/h</div>
+        <div class="spd-right">
+          <div class="spd-lim">制限<br><b>100</b> km/h</div>
+          <div class="grade-now">勾配<br><b id="gradeNow" style="color:var(--green)">—</b></div>
+        </div>
+      </div>
+      <div class="badges">
+        <div class="badge b-pow" id="bPow" style="display:none"><div class="bdot"></div>力行</div>
+        <div class="badge b-cst" id="bCst" style="display:none"><div class="bdot"></div>惰行</div>
+        <div class="badge b-brk" id="bBrk" style="display:none"><div class="bdot"></div>制動</div>
+        <div class="badge b-gps" id="bGps" style="display:none"><div class="bdot pulse"></div>GPS</div>
+        <div class="badge b-sim" id="bSim" style="display:none"><div class="bdot"></div>SIM</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">ランカーブ（リアルタイム）</div>
+      <div class="chart-wrap"><canvas id="runChart"></canvas></div>
+      <div class="grade-bar" id="gradeBar"></div>
+      <div class="chart-legend">
+        <div class="leg"><div class="leg-line" style="background:var(--accent)"></div>最適曲線</div>
+        <div class="leg"><div class="leg-line" style="background:var(--orange);border-top:2px dashed var(--orange);height:0"></div>実走行</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">省エネスコア</div>
+      <div class="tot-row">
+        <div class="tot-num" id="totScore">—</div>
+        <div style="flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:5px;">/ 100点</div>
+          <div class="tot-ring"><div class="tot-fill" id="totFill" style="width:0%"></div></div>
+        </div>
+      </div>
+      <div class="score-grid">
+        <div class="sc-item"><div class="sc-label">惰行率</div><div class="sc-val good" id="scCoast">—</div></div>
+        <div class="sc-item"><div class="sc-label">速度偏差(RMS)</div><div class="sc-val" id="scRms">—</div></div>
+        <div class="sc-item"><div class="sc-label">制限速度超過</div><div class="sc-val" id="scOver">—</div></div>
+        <div class="sc-item"><div class="sc-label">推定節約</div><div class="sc-val good" id="scSave">—</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════
+   Overpass（軽量クエリ＋CORSプロキシ）
+══════════════════════════════════ */
+const DIRECT=['https://overpass.kumi.systems/api/interpreter',
+              'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+              'https://overpass-api.de/api/interpreter'];
+const PROXY=[
+  q=>`https://corsproxy.io/?url=${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q))}`,
+  q=>`https://api.allorigins.win/raw?url=${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q))}`,
+];
+
+async function overpassQuery(q){
+  const body='data='+encodeURIComponent(q.trim());
+  for(const url of DIRECT){
+    try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body,signal:AbortSignal.timeout(8000)});
+      if(r.ok)return r.json();}catch(e){}
+  }
+  for(const fn of PROXY){
+    try{const r=await fetch(fn(q.trim()),{method:'GET',signal:AbortSignal.timeout(8000)});
+      if(r.ok)return r.json();}catch(e){}
+  }
+  throw new Error('Overpass接続失敗');
+}
+
+/* 地図タップ → 周辺の路線名だけ取得（超軽量） */
+async function fetchNearbyLines(lat,lon){
+  const q=`[out:json][timeout:8];
+(way["railway"="rail"](around:300,${lat},${lon});
+ way["railway"="subway"](around:300,${lat},${lon});
+ way["railway"="light_rail"](around:300,${lat},${lon}););
+out tags qt;`;
+  const d=await overpassQuery(q);
+  // way のタグから路線名を集める
+  const seen=new Set();
+  const lines=[];
+  for(const e of d.elements||[]){
+    const name=e.tags?.['name']||e.tags?.['name:ja']||'';
+    const ref=e.tags?.['ref']||'';
+    const key=name||ref;
+    if(key&&!seen.has(key)){
+      seen.add(key);
+      lines.push({name,ref,operator:e.tags?.operator||e.tags?.network||'',
+        railway:e.tags?.railway||'rail'});
+    }
+  }
+  return lines;
+}
+
+/* 路線名 → 駅リスト（停車駅のみ・軽量） */
+async function fetchStationsByName(lineName){
+  // relationsから停車駅ノードのみ取得
+  const q=`[out:json][timeout:12];
+relation["route"~"railway|subway|light_rail"]["name"~"${lineName}",i];
+node(r:"stop")->.s;
+node(r:"stop_exit_only")->.e;
+(.s;.e;);
+out body qt;`;
+  const d=await overpassQuery(q);
+  return d.elements||[];
+}
+
+/* ══════════════════════════════════
+   国土地理院 標高API（5並列）
+══════════════════════════════════ */
+async function fetchElev(lat,lon){
+  try{
+    const r=await fetch(`https://cyberjapandata2.gsi.go.jp/general/dem/scripts/getelevation.php?lon=${lon}&lat=${lat}&outtype=JSON`,
+      {signal:AbortSignal.timeout(5000)});
+    const d=await r.json();
+    const e=parseFloat(d.elevation);
+    return isNaN(e)?null:e;
+  }catch{return null;}
+}
+async function computeGrades(stations){
+  const BATCH=5;
+  const elevs=Array(stations.length).fill(null);
+  for(let i=0;i<stations.length;i+=BATCH){
+    const chunk=stations.slice(i,i+BATCH);
+    const res=await Promise.all(chunk.map(s=>fetchElev(s.lat,s.lon)));
+    res.forEach((e,j)=>elevs[i+j]=e);
+    const done=Math.min(i+BATCH,stations.length);
+    document.getElementById('gradeStatus').textContent=`${done}/${stations.length}駅取得済`;
+    if(i+BATCH<stations.length)await new Promise(r=>setTimeout(r,40));
+  }
+  const grades=[];
+  for(let i=0;i<stations.length-1;i++){
+    const e0=elevs[i],e1=elevs[i+1];
+    if(e0!=null&&e1!=null){
+      const dm=haversine(stations[i].lat,stations[i].lon,stations[i+1].lat,stations[i+1].lon)*1000;
+      grades.push({grade:dm>0?+((e1-e0)/dm*1000).toFixed(1):0,e0,e1});
+    }else grades.push({grade:null,e0,e1});
+  }
+  return{elevs,grades};
+}
+
+/* ══════════════════════════════════
+   OpenLayers
+══════════════════════════════════ */
+let map,routeSource,gpsSource,popupLine=null;
+let selectedLine=null;
+
+function initMap(lat,lon){
+  routeSource=new ol.source.Vector();
+  gpsSource=new ol.source.Vector();
+
+  const routeLayer=new ol.layer.Vector({source:routeSource,
+    style:f=>new ol.style.Style({
+      stroke:new ol.style.Stroke({color:f.get('color')||'#4f8ef7',width:4}),
+      image:f.get('isDot')?new ol.style.Circle({radius:5,
+        fill:new ol.style.Fill({color:'#fff'}),
+        stroke:new ol.style.Stroke({color:f.get('color')||'#4f8ef7',width:2})}):null,
+    })
+  });
+  const gpsLayer=new ol.layer.Vector({source:gpsSource,
+    style:new ol.style.Style({image:new ol.style.Circle({radius:9,
+      fill:new ol.style.Fill({color:'rgba(52,211,153,.85)'}),
+      stroke:new ol.style.Stroke({color:'#fff',width:2})})})
+  });
+
+  map=new ol.Map({
+    target:'map',
+    layers:[new ol.layer.Tile({source:new ol.source.OSM()}),routeLayer,gpsLayer],
+    view:new ol.View({center:ol.proj.fromLonLat([lon,lat]),zoom:14}),
+    controls:ol.control.defaults.defaults({zoom:true,attribution:false}),
+  });
+
+  // タップで周辺路線を検索
+  map.on('singleclick',async e=>{
+    closePopup();
+    const [ln,la]=ol.proj.toLonLat(e.coordinate);
+    setListLoading('周辺の路線を検索中...');
+    try{
+      const lines=await fetchNearbyLines(la,ln);
+      if(!lines.length){setListEmpty('近くに路線が見つかりませんでした');return;}
+      renderLineList(lines,`${lines.length}本見つかりました`);
+    }catch(err){setListEmpty('取得失敗: '+err.message);}
+  });
+
+  // ローディング非表示
+  const ld=document.getElementById('loading');
+  ld.style.opacity='0'; setTimeout(()=>ld.remove(),400);
+}
+
+/* ══════════════════════════════════
+   路線リスト
+══════════════════════════════════ */
+const LC={'山手':'#9ACD32','中央':'#E5171F','東海道':'#F68B1E','京浜':'#00B2E5',
+  '埼京':'#00AC9B','総武':'#FFD400','京葉':'#CC0033','横須賀':'#1EB5DC',
+  '御堂筋':'#E5171F','阪急':'#7B3F00','阪神':'#0052A4'};
+function getColor(name){
+  for(const[k,v]of Object.entries(LC))if(name.includes(k))return v;
+  return'#4f8ef7';
+}
+
+function setListLoading(msg){
+  document.getElementById('panelSub').textContent='';
+  document.getElementById('lineList').innerHTML=
+    `<div class="loading-row"><div class="mini-spin"></div><span style="font-size:13px;color:var(--muted)">${msg}</span></div>`;
+}
+function setListEmpty(msg){
+  document.getElementById('lineList').innerHTML=`<div class="empty-msg">${msg}</div>`;
+}
+function renderLineList(lines,sub){
+  document.getElementById('panelSub').textContent=sub;
+  const el=document.getElementById('lineList');
+  el.innerHTML='';
+  lines.forEach(l=>{
+    const color=getColor(l.name||'');
+    const row=document.createElement('div');
+    row.className='line-row';
+    row.innerHTML=`<div class="lc" style="background:${color}"></div>
+      <div class="li"><div class="ln">${l.name||l.ref||'不明'}</div>
+      <div class="ls">${l.operator}</div></div>
+      <div class="lb">選択</div>`;
+    row.onclick=()=>onSelectLine(l.name||l.ref,color);
+    el.appendChild(row);
+  });
+}
+
+/* ══════════════════════════════════
+   路線選択 → 駅取得
+══════════════════════════════════ */
+async function onSelectLine(name,color){
+  setListLoading(`${name} の駅を取得中...`);
+  routeSource.clear();
+  try{
+    const nodes=await fetchStationsByName(name);
+    let stations=nodes
+      .filter(n=>n.tags&&(n.tags.name||n.tags['name:ja']))
+      .map(n=>({name:n.tags['name:ja']||n.tags.name,lat:n.lat,lon:n.lon}));
+    if(!stations.length){setListEmpty('駅データが見つかりませんでした');return;}
+
+    // 始点からの距離を付与
+    const o=stations[0];
+    stations=stations.map(s=>({...s,dist:haversine(o.lat,o.lon,s.lat,s.lon)}));
+
+    // 路線を地図に描画
+    if(stations.length>=2){
+      const coords=stations.map(s=>ol.proj.fromLonLat([s.lon,s.lat]));
+      routeSource.addFeature(new ol.Feature({geometry:new ol.geom.LineString(coords),color}));
+      stations.forEach(s=>{
+        routeSource.addFeature(new ol.Feature({
+          geometry:new ol.geom.Point(ol.proj.fromLonLat([s.lon,s.lat])),
+          color,isDot:true}));
+      });
+      map.getView().fit(routeSource.getExtent(),{padding:[40,20,220,20],duration:500});
+    }
+
+    selectedLine={name,color,stations};
+    goTo(2);
+    buildStationList(selectedLine);
+  }catch(err){setListEmpty('取得失敗: '+err.message);}
+}
+
+/* ── 路線名テキスト検索 ── */
+async function doSearch(){
+  const q=document.getElementById('searchInput').value.trim();
+  if(!q)return;
+  setListLoading(`「${q}」を検索中...`);
+  try{
+    // wayタグで名前検索（軽量）
+    const query=`[out:json][timeout:8];
+way["railway"~"rail|subway|light_rail"]["name"~"${q}",i];
+out tags qt 10;`;
+    const d=await overpassQuery(query);
+    const seen=new Set();
+    const lines=[];
+    for(const e of d.elements||[]){
+      const name=e.tags?.name||e.tags?.['name:ja']||'';
+      if(name&&!seen.has(name)){
+        seen.add(name);
+        lines.push({name,operator:e.tags?.operator||e.tags?.network||''});
+      }
+    }
+    if(!lines.length){setListEmpty(`「${q}」は見つかりませんでした`);return;}
+    renderLineList(lines,`「${q}」— ${lines.length}件`);
+  }catch(err){setListEmpty('取得失敗: '+err.message);}
+}
+
+/* ポップアップ（将来拡張用） */
+function closePopup(){document.getElementById('popup').style.display='none';}
+function selectFromPopup(){if(popupLine)onSelectLine(popupLine.name,popupLine.color);}
+
+/* ══════════════════════════════════
+   駅リスト描画
+══════════════════════════════════ */
+function buildStationList(line){
+  document.getElementById('s2Title').textContent=line.name;
+  document.getElementById('s2Title').style.color=line.color;
+  const el=document.getElementById('stList');el.innerHTML='';
+  line.stations.forEach((st,i)=>{
+    const first=i===0,last=i===line.stations.length-1;
+    const gr=line.grades?.[i];
+    let grHtml='',vlColor='rgba(79,142,247,.3)';
+    if(gr?.grade!=null){
+      const g=gr.grade;
+      const col=Math.abs(g)<3?'var(--green)':g>0?'var(--orange)':'var(--accent)';
+      const arr=g>2?'↑':g<-2?'↓':'→';
+      grHtml=`<span style="font-size:11px;color:${col};margin-left:6px;">${arr}${g>0?'+':''}${g}‰</span>`;
+      vlColor=Math.abs(g)<3?'rgba(52,211,153,.35)':g>0?'rgba(251,146,60,.35)':'rgba(79,142,247,.35)';
+    }
+    const elHtml=line.elevs&&line.elevs[i]!=null
+      ?`<span style="font-size:11px;color:var(--muted);margin-left:4px;">${line.elevs[i].toFixed(0)}m</span>`:'';
+    const div=document.createElement('div');
+    div.className='st-item';
+    div.innerHTML=`
+      <div class="st-col">
+        ${!first?`<div class="st-vl" style="background:${vlColor}"></div>`:''}
+        <div class="st-dot ${first||last?'t':''}"></div>
+        ${!last?`<div class="st-vl" style="background:${vlColor}"></div>`:''}
+      </div>
+      <div>
+        <div style="display:flex;align-items:center;">
+          <span class="st-name">${st.name}</span>${elHtml}${grHtml}
+        </div>
+        <div class="st-meta">${(st.dist||0).toFixed(1)}km</div>
+      </div>`;
+    el.appendChild(div);
+  });
+}
+
+/* ══════════════════════════════════
+   勾配取得
+══════════════════════════════════ */
+async function fetchGrades(){
+  if(!selectedLine)return;
+  const btn=document.getElementById('gradeBtn');
+  btn.textContent='取得中...';btn.disabled=true;
+  document.getElementById('gradeLegend').style.display='flex';
+  document.getElementById('gradeStatus').textContent='取得開始...';
+  try{
+    const{elevs,grades}=await computeGrades(selectedLine.stations);
+    selectedLine.grades=grades;selectedLine.elevs=elevs;
+    buildStationList(selectedLine);
+    document.getElementById('gradeStatus').textContent='取得完了';
+  }catch(e){document.getElementById('gradeStatus').textContent='取得失敗';}
+  btn.textContent='再取得';btn.disabled=false;
+}
+
+/* ══════════════════════════════════
+   画面遷移
+══════════════════════════════════ */
+function goTo(n){
+  document.querySelectorAll('.screen').forEach((s,i)=>s.classList.toggle('active',i===n-1));
+  ['d1','d2','d3'].forEach((id,i)=>{
+    document.getElementById(id).className='step-dot'+(i<n-1?' done':i===n-1?' active':'');
+  });
+  document.getElementById('hTitle').textContent=
+    ['路線を選択',selectedLine?.name||'駅リスト','走行中'][n-1];
+  if(n===1)stopAll();
+}
+
+/* ══════════════════════════════════
+   モード選択
+══════════════════════════════════ */
+function showModeChoice(){
+  if(!selectedLine||selectedLine.stations.length<2){toast('駅が2駅以上必要です');return;}
+  const use=confirm('GPS位置情報を使用しますか？\nOK→GPS実走行 / キャンセル→シミュレーション');
+  use?startGPS():startSim();
+}
+
+/* ══════════════════════════════════
+   GPS走行
+══════════════════════════════════ */
+let gpsId=null,gpsMode=false,curStIdx=0,departureOk=false;
+let dwellStart=null,lastPos=null;
+const DWELL=10000,MOVE=2,ST_R=200;
+
+function startGPS(){
+  if(!navigator.geolocation){alert('Geolocation非対応');startSim();return;}
+  gpsMode=true;curStIdx=0;departureOk=false;dwellStart=null;lastPos=null;
+  goTo(3);setBadge('gps');
+  document.getElementById('gpsWait').classList.add('show');
+  initChart();
+  gpsId=navigator.geolocation.watchPosition(onGps,e=>{toast('GPS失敗: '+e.message);switchToSim();},
+    {enableHighAccuracy:true,maximumAge:1000,timeout:10000});
+}
+function stopGPS(){
+  if(gpsId!=null){navigator.geolocation.clearWatch(gpsId);gpsId=null;}
+  document.getElementById('gpsWait').classList.remove('show');
+}
+function switchToSim(){stopGPS();startSim();}
+
+function onGps(pos){
+  const{latitude:la,longitude:ln,speed,accuracy}=pos.coords;
+  const kmh=speed!=null?speed*3.6:null;
+  lastPos={la,ln,kmh,accuracy,ts:pos.timestamp};
+  document.getElementById('gpsAcc').textContent=`精度±${Math.round(accuracy)}m`;
+
+  gpsSource.clear();
+  gpsSource.addFeature(new ol.Feature({geometry:new ol.geom.Point(ol.proj.fromLonLat([ln,la]))}));
+
+  const sts=selectedLine.stations;
+  if(!departureOk){
+    let minD=Infinity,minI=0;
+    sts.forEach((s,i)=>{const d=haversine(la,ln,s.lat,s.lon)*1000;if(d<minD){minD=d;minI=i;}});
+    if(minD<ST_R){
+      if(!dwellStart){dwellStart=pos.timestamp;curStIdx=minI;}
+      const sec=(pos.timestamp-dwellStart)/1000;
+      document.getElementById('gpsWaitMsg').textContent=
+        `${sts[minI].name} 付近で停車確認中\n出発まで約${Math.max(0,DWELL/1000-sec).toFixed(0)}秒\n次の駅: ${sts[Math.min(minI+1,sts.length-1)].name}`;
+      if(sec>=DWELL/1000&&kmh!=null&&kmh>=MOVE){
+        departureOk=true;curStIdx=minI;
+        document.getElementById('gpsWait').classList.remove('show');
+        toast(`${sts[minI].name} を出発！`);
+      }
+    }else{
+      dwellStart=null;
+      document.getElementById('gpsWaitMsg').textContent=
+        `GPS取得中...\n駅付近(${ST_R}m以内)に近づくと\n停車検出を開始します\n最寄駅: ${sts[minI].name}(${Math.round(minD)}m)`;
+    }
+    updateSpd(kmh||0);return;
+  }
+  // 走行中
+  const ni=curStIdx+1;
+  if(ni<sts.length){
+    const dn=haversine(la,ln,sts[ni].lat,sts[ni].lon)*1000;
+    if(dn<ST_R&&(kmh==null||kmh<MOVE)){
+      curStIdx=ni;dwellStart=pos.timestamp;departureOk=false;
+      toast(`${sts[ni].name} に到着`);resetSeg();
+      if(ni>=sts.length-1){toast('終点到着！');stopGPS();}
+      return;
+    }
+  }
+  const ss=sts[curStIdx],ns=sts[Math.min(curStIdx+1,sts.length-1)];
+  const segM=Math.max(200,haversine(ss.lat,ss.lon,ns.lat,ns.lon)*1000);
+  const gone=haversine(ss.lat,ss.lon,la,ln)*1000;
+  const t=Math.min(1,Math.max(0,gone/segM));
+  updateSegUI(ss,ns,t,segM,kmh||0);
+  addPt(kmh||0);
+}
+
+/* ══════════════════════════════════
+   シミュレーション
+══════════════════════════════════ */
+let simTimer=null,simIdx=0,simT=0;
+function startSim(){
+  gpsMode=false;goTo(3);setBadge('sim');
+  simIdx=0;simT=0;initChart();
+  simTick();simTimer=setInterval(simTick,500);
+}
+function stopSim(){if(simTimer){clearInterval(simTimer);simTimer=null;}}
+function stopAll(){stopSim();stopGPS();if(rc){rc.destroy();rc=null;}}
+
+function simTick(){
+  if(!selectedLine)return;
+  const sts=selectedLine.stations;
+  if(simIdx>=sts.length-1){clearInterval(simTimer);toast('走行完了！');return;}
+  simT+=0.028;
+  if(simT>1){simT=0;simIdx++;
+    if(simIdx>=sts.length-1){clearInterval(simTimer);toast('走行完了！');return;}
+    resetSeg();}
+  const ti=Math.min(POINTS-1,Math.floor(simT*(POINTS-1)));
+  const opt=optSpd[ti]??0;
+  const act=Math.max(0,Math.min(115,opt+(Math.random()-.5)*16+(simT>.6?4:0)));
+  actSpd.push(+act.toFixed(1));
+  pushChart();
+  const d0=sts[simIdx].dist||0,d1=sts[simIdx+1].dist||0;
+  updateSegUI(sts[simIdx],sts[simIdx+1],simT,Math.max(500,(d1-d0)*1000),act);
+  updateGrade();updateScore();
+}
+
+/* ══════════════════════════════════
+   ランカーブ
+══════════════════════════════════ */
+let rc=null,optSpd=[],actSpd=[];
+const POINTS=60;
+
+function curGrade(){
+  const i=gpsMode?curStIdx:simIdx;
+  return selectedLine?.grades?.[i]?.grade||0;
+}
+function buildOpt(g=0){
+  const cl=Math.max(-30,Math.min(30,g||0));
+  const maxV=Math.min(110,100-cl*.5);
+  const ae=0.20+cl*.003,cs=0.55-cl*.004,bs=0.82+cl*.002;
+  return Array.from({length:POINTS},(_,i)=>{
+    const t=i/(POINTS-1);
+    if(t<ae)return+(t/ae*maxV);
+    if(t<cs)return maxV;
+    if(t<bs)return+(maxV-(t-cs)/(bs-cs)*15);
+    return+(Math.max(0,maxV-15-(t-bs)/(1-bs)*(maxV-15)));
+  });
+}
+
+function initChart(){
+  if(rc)rc.destroy();
+  optSpd=buildOpt(curGrade());actSpd=[];
+  buildGradeBar(curGrade());
+  const ctx=document.getElementById('runChart').getContext('2d');
+  rc=new Chart(ctx,{type:'line',
+    data:{labels:optSpd.map((_,i)=>i),datasets:[
+      {label:'最適',data:optSpd,borderColor:'#4f8ef7',borderWidth:2,pointRadius:0,tension:.4,
+        fill:{target:'origin',above:'rgba(79,142,247,.06)'}},
+      {label:'実走行',data:[...actSpd],borderColor:'#fb923c',borderWidth:2,borderDash:[5,3],
+        pointRadius:0,tension:.3,fill:false},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,animation:false,
+      plugins:{legend:{display:false},tooltip:{enabled:false}},
+      scales:{x:{display:false},y:{min:0,max:120,border:{display:false},
+        grid:{color:'rgba(255,255,255,.05)'},
+        ticks:{color:'#7a7f96',font:{size:10},callback:v=>v+''}}}}});
+}
+function resetSeg(){
+  optSpd=buildOpt(curGrade());actSpd=[];
+  buildGradeBar(curGrade());
+  if(rc){rc.data.datasets[0].data=optSpd;rc.data.datasets[1].data=[];rc.update('none');}
+}
+function addPt(kmh){actSpd.push(+kmh.toFixed(1));pushChart();updateScore();}
+function pushChart(){
+  if(!rc)return;
+  rc.data.datasets[1].data=[...actSpd,...Array(Math.max(0,POINTS-actSpd.length)).fill(null)];
+  rc.update('none');
+}
+function buildGradeBar(g){
+  const bar=document.getElementById('gradeBar');bar.innerHTML='';
+  const col=Math.abs(g)<3?'#34d399':g>0?'#fb923c':'#4f8ef7';
+  const op=Math.min(1,0.3+Math.abs(g)/50).toFixed(2);
+  for(let i=0;i<POINTS;i++){
+    const s=document.createElement('div');
+    s.className='grade-seg';s.style.flex='1';s.style.background=col;s.style.opacity=op;
+    bar.appendChild(s);
+  }
+}
+
+/* ── UI更新 ── */
+function updateSegUI(ss,ns,t,segM,kmh){
+  document.getElementById('curSt').textContent=ss.name;
+  document.getElementById('nxtSt').textContent=ns.name;
+  document.getElementById('prog').style.width=(t*100).toFixed(1)+'%';
+  document.getElementById('progA').textContent=Math.round(t*segM)+'m';
+  document.getElementById('progB').textContent=Math.round(segM)+'m';
+  updateSpd(kmh);
+}
+function updateSpd(kmh){
+  document.getElementById('spdVal').textContent=Math.round(kmh);
+  const ph=kmh<5?'Brk':kmh<95?'Cst':'Pow';
+  ['bPow','bCst','bBrk'].forEach(id=>document.getElementById(id).style.display='none');
+  document.getElementById('b'+ph).style.display='flex';
+  updateGrade();
+}
+function updateGrade(){
+  const g=curGrade();
+  const col=Math.abs(g)<3?'var(--green)':g>0?'var(--orange)':'var(--accent)';
+  const arr=g>2?'↑':g<-2?'↓':'→';
+  const el=document.getElementById('gradeNow');
+  el.textContent=`${arr} ${g>0?'+':''}${g||0}‰`;el.style.color=col;
+}
+function setBadge(mode){
+  document.getElementById('bGps').style.display=mode==='gps'?'flex':'none';
+  document.getElementById('bSim').style.display=mode==='sim'?'flex':'none';
+  const mb=document.getElementById('modeBadge');
+  if(mode==='gps'){mb.className='badge b-gps';mb.innerHTML='<div class="bdot pulse"></div>GPS走行';}
+  else{mb.className='badge b-sim';mb.innerHTML='<div class="bdot"></div>シミュレーション';}
+}
+function updateScore(){
+  const a=actSpd.filter(v=>v!=null);if(a.length<2)return;
+  const coast=a.filter((v,i)=>i>0&&Math.abs(v-a[i-1])<3).length;
+  const rms=Math.sqrt(a.reduce((s,v,i)=>{
+    const d=v-(optSpd[Math.floor(i/a.length*(POINTS-1))]||0);return s+d*d;},0)/a.length);
+  const over=a.filter(v=>v>102).length;
+  const score=Math.max(40,Math.min(99,95-rms*.4-over*3));
+  document.getElementById('totScore').textContent=Math.round(score);
+  document.getElementById('totFill').style.width=score.toFixed(0)+'%';
+  document.getElementById('scCoast').textContent=Math.round(coast/a.length*100)+'%';
+  document.getElementById('scRms').textContent=rms.toFixed(1)+' km/h';
+  document.getElementById('scRms').className='sc-val '+(rms<8?'good':rms<15?'warn':'bad');
+  document.getElementById('scOver').textContent=over+'回';
+  document.getElementById('scOver').className='sc-val '+(over===0?'good':over<3?'warn':'bad');
+  document.getElementById('scSave').textContent='+'+Math.max(0,(100-rms)*.12).toFixed(1)+'%';
+}
+
+/* ══════════════════════════════════
+   ユーティリティ
+══════════════════════════════════ */
+function haversine(la1,ln1,la2,ln2){
+  const R=6371,dL=(la2-la1)*Math.PI/180,dN=(ln2-ln1)*Math.PI/180;
+  const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dN/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+/* ══════════════════════════════════
+   起動：まず現在地取得 → 地図初期化
+══════════════════════════════════ */
+window.addEventListener('load',()=>{
+  document.getElementById('loadMsg').textContent='現在地を取得中...';
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(
+      pos=>{initMap(pos.coords.latitude,pos.coords.longitude);},
+      ()=>{initMap(35.6812,139.7671);}, // 失敗時は東京駅
+      {enableHighAccuracy:true,timeout:8000,maximumAge:0}
+    );
+  }else{
+    initMap(35.6812,139.7671);
+  }
+});
+</script>
+</body>
+</html>
