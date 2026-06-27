@@ -254,6 +254,7 @@ header h1{font-size:15px;font-weight:600;flex:1;}
     <div class="panel-top">
       <h2>登録駅</h2>
       <span id="regCount" style="font-size:12px;color:var(--accent);"></span>
+      <button class="icon-btn" id="trackBtn" title="線路形状を取得" onclick="fetchTrackShape()" style="display:none;font-size:11px;padding:4px 8px;">🛤 線路取得</button>
     </div>
     <div class="reg-list" id="regList">
       <div class="empty-reg">地図をタップして駅を登録してください</div>
@@ -453,12 +454,121 @@ function rebuildEditMap(){
       color,label:s.name,big:true,
     }));
   });
-  // 路線（破線）
+  // 路線（線路形状があればそれを使い、なければ直線破線）
   if(editingStations.length>=2){
-    const coords=editingStations.map(s=>ol.proj.fromLonLat([s.lon,s.lat]));
-    routeSource.addFeature(new ol.Feature({geometry:new ol.geom.LineString(coords),color,dash:true}));
-    map.getView().fit(routeSource.getExtent(),{padding:[60,40,260,40],duration:400,maxZoom:15});
+    for(let i=0;i<editingStations.length-1;i++){
+      const track=editingStations[i]._trackToNext;
+      if(track&&track.length>=2){
+        const coords=track.map(([ln,la])=>ol.proj.fromLonLat([ln,la]));
+        routeSource.addFeature(new ol.Feature({geometry:new ol.geom.LineString(coords),color,dash:false}));
+      }else{
+        const s0=editingStations[i],s1=editingStations[i+1];
+        const coords=[ol.proj.fromLonLat([s0.lon,s0.lat]),ol.proj.fromLonLat([s1.lon,s1.lat])];
+        routeSource.addFeature(new ol.Feature({geometry:new ol.geom.LineString(coords),color,dash:true}));
+      }
+    }
+    const ext=routeSource.getExtent();
+    if(ext[0]!==Infinity)map.getView().fit(ext,{padding:[60,40,260,40],duration:400,maxZoom:15});
   }
+}
+
+/* ══ Overpass: 駅間の線路形状取得 ══ */
+const OV_DIRECT=['https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass-api.de/api/interpreter'];
+const OV_PROXY=[
+  q=>`https://corsproxy.io/?url=${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q))}`,
+  q=>`https://api.allorigins.win/raw?url=${encodeURIComponent('https://overpass-api.de/api/interpreter?data='+encodeURIComponent(q))}`,
+];
+async function ovQuery(q){
+  const body='data='+encodeURIComponent(q.trim());
+  for(const url of OV_DIRECT){
+    try{const r=await fetch(url,{method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body,signal:AbortSignal.timeout(8000)});
+      if(r.ok)return r.json();}catch(e){}
+  }
+  for(const fn of OV_PROXY){
+    try{const r=await fetch(fn(q.trim()),{signal:AbortSignal.timeout(8000)});
+      if(r.ok)return r.json();}catch(e){}
+  }
+  throw new Error('Overpass接続失敗');
+}
+
+// 2駅間のbboxを少し広げた範囲でrailway wayを取得し、グリーディに結合
+async function fetchTrackBetween(s0,s1){
+  const minLat=Math.min(s0.lat,s1.lat)-.015, maxLat=Math.max(s0.lat,s1.lat)+.015;
+  const minLon=Math.min(s0.lon,s1.lon)-.015, maxLon=Math.max(s0.lon,s1.lon)+.015;
+  const q=`[out:json][timeout:10];
+(way["railway"~"rail|subway|light_rail|narrow_gauge|tram"](${minLat},${minLon},${maxLat},${maxLon}););
+out geom qt;`;
+  const d=await ovQuery(q);
+  const ways=(d.elements||[]).filter(e=>e.geometry&&e.geometry.length>=2);
+  if(!ways.length)return null;
+  // 全wayの座標をフラット化
+  const segs=ways.map(w=>w.geometry.map(g=>[g.lon,g.lat]));
+  // s0に最も近い端点を持つsegから始める
+  function dist2(a,b){return(a[0]-b[0])**2+(a[1]-b[1])**2;}
+  const origin=[s0.lon,s0.lat],dest=[s1.lon,s1.lat];
+  let best=null,bestD=1e9;
+  segs.forEach((seg,i)=>{
+    const d0=dist2(seg[0],origin),d1=dist2(seg[seg.length-1],origin);
+    const d=Math.min(d0,d1);
+    if(d<bestD){bestD=d;best={i,rev:d1<d0};}
+  });
+  if(!best)return null;
+  // グリーディに繋いでいく
+  const used=new Set([best.i]);
+  let chain=best.rev?[...segs[best.i]].reverse():[...segs[best.i]];
+  for(let iter=0;iter<segs.length*2;iter++){
+    const tail=chain[chain.length-1];
+    // destに十分近ければ終了
+    if(dist2(tail,dest)<.0004)break;
+    let nxtBest=null,nxtD=1e9,nxtRev=false;
+    segs.forEach((seg,i)=>{
+      if(used.has(i))return;
+      const d0=dist2(seg[0],tail),d1=dist2(seg[seg.length-1],tail);
+      const d=Math.min(d0,d1);
+      if(d<nxtD){nxtD=d;nxtBest=i;nxtRev=d1<d0;}
+    });
+    if(nxtBest===null||nxtD>.0004)break;
+    used.add(nxtBest);
+    const seg=nxtRev?[...segs[nxtBest]].reverse():[...segs[nxtBest]];
+    chain=chain.concat(seg.slice(1));
+  }
+  return chain; // [[lon,lat],...]
+}
+
+let trackFetching=false;
+async function fetchTrackShape(){
+  if(editingStations.length<2){toast('2駅以上登録してください');return;}
+  if(trackFetching)return;
+  trackFetching=true;
+  const btn=document.getElementById('trackBtn');
+  btn.textContent='取得中...';btn.disabled=true;
+  const color=document.getElementById('colorPick').value;
+  let successCount=0;
+  // 駅間ごとに取得して trackCoords に保存
+  for(let i=0;i<editingStations.length-1;i++){
+    const s0=editingStations[i],s1=editingStations[i+1];
+    btn.textContent=`取得中 ${i+1}/${editingStations.length-1}`;
+    try{
+      const coords=await fetchTrackBetween(s0,s1);
+      if(coords&&coords.length>=2){
+        editingStations[i]._trackToNext=coords;
+        successCount++;
+      }else{
+        editingStations[i]._trackToNext=null;
+      }
+    }catch(e){
+      editingStations[i]._trackToNext=null;
+    }
+  }
+  trackFetching=false;
+  btn.textContent='🛤 線路取得';btn.disabled=false;
+  rebuildEditMap();
+  if(successCount>0)toast(`${successCount}区間の線路形状を取得しました`);
+  else toast('線路形状の取得に失敗しました（直線で表示）');
 }
 
 function renderRegList(){
@@ -481,7 +591,12 @@ function renderRegList(){
       <button class="reg-del" onclick="removeStation(${i})">✕</button>`;
     el.appendChild(div);
   });
-  if(editingStations.length>=2)document.getElementById('hBtn').style.display='';
+  if(editingStations.length>=2){
+    document.getElementById('hBtn').style.display='';
+    document.getElementById('trackBtn').style.display='';
+  }else{
+    document.getElementById('trackBtn').style.display='none';
+  }
 }
 
 function removeStation(i){
@@ -503,7 +618,7 @@ function saveLine(andRun=false){
   const name=document.getElementById('lineNameInput').value.trim()||'路線'+Date.now();
   const color=document.getElementById('colorPick').value;
   const o=editingStations[0];
-  const stations=editingStations.map(s=>({...s,dist:haversine(o.lat,o.lon,s.lat,s.lon)}));
+  const stations=editingStations.map(s=>({...s,dist:haversine(o.lat,o.lon,s.lat,s.lon),trackToNext:s._trackToNext||null}));
   const line={id:Date.now(),name,color,stations,grades:null,elevs:null,savedAt:new Date().toISOString()};
   savedLines.push(line);saveDB(savedLines);
   toast(`「${name}」を保存しました`);
