@@ -403,7 +403,9 @@ function initMap(lat,lon){
     openStModal(la,ln,e.pixel);
   });
 
-  // ローディングは hideLoading() で消す（GPS/fallback後に呼ぶ）
+  // ローディング非表示
+  const ld=document.getElementById('loading');
+  if(ld){ld.style.opacity='0';setTimeout(()=>ld.remove(),400);}
 }
 
 /* ══ タブ切替 ══ */
@@ -1065,26 +1067,17 @@ function hideLoading(){
 }
 
 window.addEventListener('load',()=>{
-  // CDN読み込み失敗チェック：olが存在しなければエラー表示
-  if(typeof ol==='undefined'){
-    document.querySelector('#loading p').textContent='ライブラリの読み込みに失敗しました。通信環境を確認してください。';
-    return;
-  }
-
   let done=false;
-  const fallback=setTimeout(()=>{
-    if(!done){done=true;initMap(35.6812,139.7671);hideLoading();}
-  },5000);
-
+  const go=(lat,lon)=>{if(!done){done=true;initMap(lat,lon);}};
+  // 5秒で強制起動
+  setTimeout(()=>go(35.6812,139.7671),5000);
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      p=>{if(!done){done=true;clearTimeout(fallback);initMap(p.coords.latitude,p.coords.longitude);hideLoading();}},
-      ()=>{if(!done){done=true;clearTimeout(fallback);initMap(35.6812,139.7671);hideLoading();}},
+      p=>go(p.coords.latitude,p.coords.longitude),
+      ()=>go(35.6812,139.7671),
       {enableHighAccuracy:false,timeout:4000,maximumAge:60000}
     );
-  }else{
-    clearTimeout(fallback);initMap(35.6812,139.7671);hideLoading();
-  }
+  }else{go(35.6812,139.7671);}
 });
 </script>
 </body>
