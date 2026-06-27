@@ -403,8 +403,7 @@ function initMap(lat,lon){
     openStModal(la,ln,e.pixel);
   });
 
-  const ld=document.getElementById('loading');
-  ld.style.opacity='0';setTimeout(()=>ld.remove(),400);
+  // ローディングは hideLoading() で消す（GPS/fallback後に呼ぶ）
 }
 
 /* ══ タブ切替 ══ */
@@ -1060,20 +1059,32 @@ function toast(msg){
 }
 
 /* ══ 起動 ══ */
+function hideLoading(){
+  const ld=document.getElementById('loading');
+  if(ld){ld.style.opacity='0';setTimeout(()=>ld.remove(),400);}
+}
+
 window.addEventListener('load',()=>{
-  // 5秒以内に取れなければ東京駅で起動
+  // CDN読み込み失敗チェック：olが存在しなければエラー表示
+  if(typeof ol==='undefined'){
+    document.querySelector('#loading p').textContent='ライブラリの読み込みに失敗しました。通信環境を確認してください。';
+    return;
+  }
+
   let done=false;
   const fallback=setTimeout(()=>{
-    if(!done){done=true;initMap(35.6812,139.7671);}
+    if(!done){done=true;initMap(35.6812,139.7671);hideLoading();}
   },5000);
 
   if(navigator.geolocation){
     navigator.geolocation.getCurrentPosition(
-      p=>{if(!done){done=true;clearTimeout(fallback);initMap(p.coords.latitude,p.coords.longitude);}},
-      ()=>{if(!done){done=true;clearTimeout(fallback);initMap(35.6812,139.7671);}},
-      {enableHighAccuracy:false,timeout:4500,maximumAge:60000}
+      p=>{if(!done){done=true;clearTimeout(fallback);initMap(p.coords.latitude,p.coords.longitude);hideLoading();}},
+      ()=>{if(!done){done=true;clearTimeout(fallback);initMap(35.6812,139.7671);hideLoading();}},
+      {enableHighAccuracy:false,timeout:4000,maximumAge:60000}
     );
-  }else{clearTimeout(fallback);initMap(35.6812,139.7671);}
+  }else{
+    clearTimeout(fallback);initMap(35.6812,139.7671);hideLoading();
+  }
 });
 </script>
 </body>
