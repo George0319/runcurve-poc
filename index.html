@@ -64,6 +64,15 @@ header h1{font-size:15px;font-weight:600;flex:1;}
 .icon-btn{background:none;border:1px solid var(--border);border-radius:8px;
   padding:5px 8px;color:var(--muted);cursor:pointer;font-size:14px;}
 .icon-btn.red{border-color:rgba(248,113,113,.3);color:var(--red);}
+.trace-btn{background:var(--orange);border:none;border-radius:8px;padding:5px 10px;
+  color:#fff;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.trace-btn.on{background:var(--red);}
+#traceOverlay{position:absolute;inset:0;z-index:15;touch-action:none;
+  display:none;cursor:crosshair;background:rgba(251,146,60,0.04);}
+#traceOverlay.on{display:block;}
+.trace-hint{position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  background:rgba(251,146,60,.92);border-radius:20px;padding:7px 16px;
+  font-size:12px;font-weight:600;color:#fff;white-space:nowrap;pointer-events:none;}
 
 /* 駅リスト（登録済み） */
 .reg-list{overflow-y:auto;flex:1;padding:6px 0 12px;}
@@ -232,6 +241,9 @@ header h1{font-size:15px;font-weight:600;flex:1;}
 <div class="screen active" id="s0">
   <div id="regMap">
     <div id="map"></div>
+    <div id="traceOverlay">
+      <div class="trace-hint">指でなぞってください → 離すと確定</div>
+    </div>
     <!-- タップポップアップ -->
     <div class="tap-popup" id="tapPopup" style="display:none;position:absolute;top:40%;left:50%;">
       <h3>📍 この場所を駅として登録</h3>
@@ -255,6 +267,7 @@ header h1{font-size:15px;font-weight:600;flex:1;}
       <h2>登録駅</h2>
       <span id="regCount" style="font-size:12px;color:var(--accent);"></span>
       <button class="icon-btn" id="trackBtn" title="線路形状を取得" onclick="fetchTrackShape()" style="display:none;font-size:11px;padding:4px 8px;">🛤 線路取得</button>
+      <button class="trace-btn" id="traceBtn" style="display:none;" onclick="toggleTrace()">✏️ なぞる</button>
     </div>
     <div class="reg-list" id="regList">
       <div class="empty-reg">地図をタップして駅を登録してください</div>
@@ -539,6 +552,161 @@ out geom qt;`;
   return chain; // [[lon,lat],...]
 }
 
+/* ══ なぞりモード ══ */
+let traceMode=false, tracePath=[], traceSegIdx=0, traceSource=null;
+
+function toggleTrace(){
+  if(editingStations.length<2){toast('2駅以上登録してください');return;}
+  traceMode=!traceMode;
+  const btn=document.getElementById('traceBtn');
+  const ov=document.getElementById('traceOverlay');
+  if(traceMode){
+    btn.textContent='✕ 終了';
+    btn.classList.add('on');
+    ov.classList.add('on');
+    map.getInteractions().forEach(function(i){i.setActive(false);});
+    // なぞり描画レイヤー初期化
+    if(!traceSource){
+      traceSource=new ol.source.Vector();
+      map.addLayer(new ol.layer.Vector({
+        source:traceSource,
+        zIndex:20,
+        style:new ol.style.Style({
+          stroke:new ol.style.Stroke({color:'#fb923c',width:3,lineDash:[4,3]})
+        })
+      }));
+    }
+    traceSource.clear();
+    pickSegment();
+  }else{
+    exitTrace();
+  }
+}
+
+function exitTrace(){
+  traceMode=false;
+  tracePath=[];
+  document.getElementById('traceBtn').textContent='✏️ なぞる';
+  document.getElementById('traceBtn').classList.remove('on');
+  document.getElementById('traceOverlay').classList.remove('on');
+  map.getInteractions().forEach(function(i){i.setActive(true);});
+  if(traceSource)traceSource.clear();
+}
+
+function pickSegment(){
+  var opts='';
+  for(var i=0;i<editingStations.length-1;i++){
+    opts+=String(i+1)+': '+editingStations[i].name+' -> '+editingStations[i+1].name+'\n';
+  }
+  var ans=prompt('なぞる区間の番号を入力:\n'+opts);
+  var idx=parseInt(ans,10)-1;
+  if(isNaN(idx)||idx<0||idx>=editingStations.length-1){
+    exitTrace();return;
+  }
+  traceSegIdx=idx;
+  tracePath=[];
+  var s0=editingStations[idx],s1=editingStations[idx+1];
+  var ext=ol.extent.boundingExtent([
+    ol.proj.fromLonLat([s0.lon,s0.lat]),
+    ol.proj.fromLonLat([s1.lon,s1.lat])
+  ]);
+  map.getView().fit(ext,{padding:[80,40,280,40],duration:400,maxZoom:16});
+  setupTraceEvents();
+  toast(String(idx+1)+'番区間をなぞってください');
+}
+
+function setupTraceEvents(){
+  var ov=document.getElementById('traceOverlay');
+  var drawing=false;
+  ov.ontouchstart=function(e){
+    e.preventDefault();drawing=true;tracePath=[];
+    addPtFromTouch(e);
+  };
+  ov.ontouchmove=function(e){
+    e.preventDefault();if(!drawing)return;
+    addPtFromTouch(e);
+  };
+  ov.ontouchend=function(e){
+    e.preventDefault();
+    if(drawing&&tracePath.length>=2)finishTrace();
+    drawing=false;
+  };
+  ov.onmousedown=function(e){drawing=true;tracePath=[];addPtFromMouse(e);};
+  ov.onmousemove=function(e){if(!drawing)return;addPtFromMouse(e);};
+  ov.onmouseup=function(e){if(drawing&&tracePath.length>=2)finishTrace();drawing=false;};
+}
+
+function addPtFromTouch(e){
+  var t=e.touches[0]||e.changedTouches[0];
+  if(t)addPtFromXY(t.clientX,t.clientY);
+}
+function addPtFromMouse(e){addPtFromXY(e.clientX,e.clientY);}
+function addPtFromXY(cx,cy){
+  var rect=document.getElementById('map').getBoundingClientRect();
+  var coord=map.getCoordinateFromPixel([cx-rect.left,cy-rect.top]);
+  if(!coord)return;
+  var ll=ol.proj.toLonLat(coord);
+  var lon=ll[0],lat=ll[1];
+  if(tracePath.length>0){
+    var prev=tracePath[tracePath.length-1];
+    var d=Math.sqrt(Math.pow(lon-prev[0],2)+Math.pow(lat-prev[1],2));
+    if(d<0.00005)return;
+  }
+  tracePath.push([lon,lat]);
+  if(traceSource&&tracePath.length>=2){
+    traceSource.clear();
+    traceSource.addFeature(new ol.Feature({
+      geometry:new ol.geom.LineString(
+        tracePath.map(function(p){return ol.proj.fromLonLat(p);})
+      )
+    }));
+  }
+}
+
+function finishTrace(){
+  if(tracePath.length<2){toast('もう少し長くなぞってください');return;}
+  var simplified=dpSimplify(tracePath,0.00008);
+  editingStations[traceSegIdx]._trackToNext=simplified;
+  toast('区間'+String(traceSegIdx+1)+'の線路を登録しました（'+simplified.length+'点）');
+  rebuildEditMap();
+  var next=traceSegIdx+1;
+  if(next<editingStations.length-1){
+    if(confirm('次の区間（'+editingStations[next].name+' -> '+editingStations[next+1].name+'）もなぞりますか？')){
+      traceSegIdx=next;tracePath=[];
+      if(traceSource)traceSource.clear();
+      var s0=editingStations[next],s1=editingStations[next+1];
+      var ext=ol.extent.boundingExtent([
+        ol.proj.fromLonLat([s0.lon,s0.lat]),
+        ol.proj.fromLonLat([s1.lon,s1.lat])
+      ]);
+      map.getView().fit(ext,{padding:[80,40,280,40],duration:400,maxZoom:16});
+      toast(String(next+1)+'番区間をなぞってください');
+      return;
+    }
+  }
+  exitTrace();
+}
+
+// Douglas-Peuckerで点を間引く
+function dpSimplify(pts,eps){
+  if(pts.length<=2)return pts;
+  var maxD=0,maxI=0;
+  var x1=pts[0][0],y1=pts[0][1],x2=pts[pts.length-1][0],y2=pts[pts.length-1][1];
+  var len=Math.sqrt(Math.pow(x2-x1,2)+Math.pow(y2-y1,2));
+  for(var i=1;i<pts.length-1;i++){
+    var px=pts[i][0],py=pts[i][1];
+    var d=len>0?Math.abs((y2-y1)*px-(x2-x1)*py+x2*y1-y2*x1)/len:
+      Math.sqrt(Math.pow(px-x1,2)+Math.pow(py-y1,2));
+    if(d>maxD){maxD=d;maxI=i;}
+  }
+  if(maxD>eps){
+    var l=dpSimplify(pts.slice(0,maxI+1),eps);
+    var r=dpSimplify(pts.slice(maxI),eps);
+    return l.slice(0,-1).concat(r);
+  }
+  return[pts[0],pts[pts.length-1]];
+}
+
 let trackFetching=false;
 async function fetchTrackShape(){
   if(editingStations.length<2){toast('2駅以上登録してください');return;}
@@ -594,8 +762,10 @@ function renderRegList(){
   if(editingStations.length>=2){
     document.getElementById('hBtn').style.display='';
     document.getElementById('trackBtn').style.display='';
+    document.getElementById('traceBtn').style.display='';
   }else{
     document.getElementById('trackBtn').style.display='none';
+    document.getElementById('traceBtn').style.display='none';
   }
 }
 
