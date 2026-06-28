@@ -864,12 +864,12 @@ function showModeDialog(){
 }
 
 /* ══ GPS走行 ══ */
-let gpsId=null,gpsMode=false,curIdx=0,departed=false;
+let gpsId=null,gpsMode=false,curIdx=0,departed=false,lastGpsPos=null;
 const MOVE_KMH=2,ST_RAD=200;
 
 function startGPS(){
   if(!navigator.geolocation){toast('Geolocation非対応');startSim();return;}
-  gpsMode=true;curIdx=0;departed=false;
+  gpsMode=true;curIdx=0;departed=false;lastGpsPos=null;
   initChart();setBadges('gps');
   document.getElementById('gpsWait').classList.add('show');
   gpsId=navigator.geolocation.watchPosition(onGps,
@@ -939,8 +939,29 @@ function onGps(pos){
   const segM=Math.max(200,haversine(ss.lat,ss.lon,ns.lat,ns.lon)*1000);
   const gone=Math.min(segM,haversine(ss.lat,ss.lon,la,ln)*1000);
   const posT=Math.min(1,gone/segM);
-  updateSegUI(ss,ns,posT,segM,kmh||0);
-  actSpd.push(+(kmh||0).toFixed(1));pushChart(posT);updateScore();
+
+  // 位置から速度を自前計算（GPS speed が null の場合や精度補完に使用）
+  let calcKmh=kmh;
+  if(lastGpsPos){
+    const dt=(pos.timestamp-lastGpsPos.ts)/1000; // 秒
+    if(dt>0){
+      const dm=haversine(lastGpsPos.la,lastGpsPos.ln,la,ln)*1000; // m
+      const v=dm/dt*3.6; // km/h
+      // GPS速度が取れない場合は計算値、取れる場合は平均を使う
+      calcKmh=kmh!=null?(kmh*0.6+v*0.4):v;
+    }
+  }
+  lastGpsPos={la,ln,ts:pos.timestamp};
+  const spd=Math.max(0,Math.min(200,calcKmh||0));
+
+  // ランカーブはposT（区間内の位置0~1）をX軸にして打点
+  const xi=Math.round(posT*(POINTS-1));
+  // actSpdをPOINTS長の配列として管理（位置ベース）
+  if(actSpd.length!==POINTS)actSpd=Array(POINTS).fill(null);
+  actSpd[xi]=+spd.toFixed(1);
+
+  updateSegUI(ss,ns,posT,segM,spd);
+  pushChart(posT);updateScore();
 }
 
 /* ══ シミュレーション ══ */
@@ -989,7 +1010,10 @@ function buildOpt(g=0){
 function initChart(){
   if(rc)rc.destroy();
   const gi=gpsMode?curIdx:simIdx;
-  optSpd=buildOpt(gradeAt(gi));actSpd=[];buildGradeBar(gradeAt(gi));
+  optSpd=buildOpt(gradeAt(gi));
+  actSpd=gpsMode?Array(POINTS).fill(null):[];
+  lastGpsPos=null;
+  buildGradeBar(gradeAt(gi));
   const ctx=document.getElementById('runChart').getContext('2d');
   rc=new Chart(ctx,{type:'line',
     data:{labels:optSpd.map((_,i)=>i),datasets:[
@@ -1008,20 +1032,26 @@ function initChart(){
 }
 function resetSeg(){
   const gi=gpsMode?curIdx:simIdx;
-  optSpd=buildOpt(gradeAt(gi));actSpd=[];buildGradeBar(gradeAt(gi));
+  optSpd=buildOpt(gradeAt(gi));
+  actSpd=gpsMode?Array(POINTS).fill(null):[];
+  lastGpsPos=null;
+  buildGradeBar(gradeAt(gi));
   if(rc){rc.data.datasets[0].data=optSpd;rc.data.datasets[1].data=[];rc.data.datasets[2].data=[];rc.update('none');}
 }
 function pushChart(posT){
   if(!rc)return;
-  rc.data.datasets[1].data=[...actSpd,...Array(Math.max(0,POINTS-actSpd.length)).fill(null)];
-  // 現在位置マーカー: posT(0~1)をX軸インデックスに変換して▲を表示
+  // GPSモード: actSpdはPOINTS長の位置ベース配列
+  // SIMモード: actSpdは時系列追記配列なのでPOINTSにパディング
+  if(gpsMode){
+    rc.data.datasets[1].data=[...actSpd];
+  }else{
+    rc.data.datasets[1].data=[...actSpd,...Array(Math.max(0,POINTS-actSpd.length)).fill(null)];
+  }
+  // 現在位置マーカー（▲）
   if(posT!=null){
     const xi=Math.round(posT*(POINTS-1));
-    // 現在位置のY値は最適曲線の値を使う（X軸上のどこかを示すため）
-    const yv=optSpd[xi]??0;
-    // マーカー用に全点nullにして現在位置だけ値を入れる
     const markerData=Array(POINTS).fill(null);
-    markerData[xi]=yv;
+    markerData[xi]=optSpd[xi]??0;
     rc.data.datasets[2].data=markerData;
   }
   rc.update('none');
